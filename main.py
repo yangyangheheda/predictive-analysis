@@ -12,6 +12,7 @@ Original file is located at
 # =========================================
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split
 from sklearn.compose import ColumnTransformer
@@ -211,6 +212,8 @@ def engineer_features_v2(data):
     ).astype(int)
 
     return df_fe
+
+df = engineer_features_v2(df)
 
 # duration is dropped because it is only known after the call ends
 X = df.drop(columns=["y", "y_binary", "duration"])
