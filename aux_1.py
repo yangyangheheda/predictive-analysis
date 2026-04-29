@@ -10,9 +10,14 @@ Original file is located at
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
-import os
 import matplotlib.pyplot as plt
+
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.linear_model import LogisticRegression
 
 st.set_page_config(page_title="Bank Marketing Prediction Dashboard", layout="wide")
 
@@ -21,13 +26,13 @@ st.set_page_config(page_title="Bank Marketing Prediction Dashboard", layout="wid
 # --------------------------------------------------
 results = pd.DataFrame({
     "Model": ["Logistic Regression", "Lasso Logistic", "Random Forest", "SVM (RBF)", "XGBoost"],
-    "Accuracy": [0.8236, 0.8277, 0.8641, 0.8455, 0.8422],
-    "Balanced_Accuracy": [0.7190, 0.7310, 0.7092, 0.7410, 0.7197],
-    "Precision": [0.3278, 0.3388, 0.4035, 0.3727, 0.3585],
-    "Recall": [0.5852, 0.6074, 0.5111, 0.6074, 0.5630],
-    "F1": [0.4202, 0.4350, 0.4510, 0.4620, 0.4380],
-    "ROC_AUC": [0.7670, 0.7895, 0.7759, 0.7676, 0.7696],
-    "PR_AUC": [0.4006, 0.3963, 0.4191, 0.4112, 0.4176]
+    "Accuracy": [0.8236, 0.8277, 0.8641, 0.8455, 0.8430],
+    "Balanced_Accuracy": [0.7190, 0.7310, 0.7092, 0.7410, 0.7234],
+    "Precision": [0.3278, 0.3388, 0.4035, 0.3727, 0.3615],
+    "Recall": [0.5852, 0.6074, 0.5111, 0.6074, 0.5704],
+    "F1": [0.4202, 0.4350, 0.4510, 0.4620, 0.4425],
+    "ROC_AUC": [0.7670, 0.7895, 0.7759, 0.7676, 0.7668],
+    "PR_AUC": [0.4006, 0.3963, 0.4191, 0.4112, 0.4215]
 })
 
 # --------------------------------------------------
@@ -36,6 +41,7 @@ results = pd.DataFrame({
 def engineer_features_v2(data):
     df_fe = data.copy()
 
+    # Contact history
     df_fe["ever_contacted_before"] = (df_fe["pdays"] != 999).astype(int)
     df_fe["never_contacted_before"] = (df_fe["pdays"] == 999).astype(int)
     df_fe["pdays_clean"] = np.where(df_fe["pdays"] == 999, 0, df_fe["pdays"])
@@ -70,6 +76,7 @@ def engineer_features_v2(data):
 
     df_fe["previous_bin"] = df_fe["previous"].apply(previous_bin)
 
+    # Campaign pressure
     def campaign_bin(x):
         if x == 1:
             return "1"
@@ -87,6 +94,7 @@ def engineer_features_v2(data):
     df_fe["very_high_campaign_pressure"] = (df_fe["campaign"] >= 6).astype(int)
     df_fe["first_time_contact"] = ((df_fe["campaign"] == 1) & (df_fe["previous"] == 0)).astype(int)
 
+    # Demographic/profile
     def age_group(x):
         if x < 30:
             return "under_30"
@@ -116,12 +124,14 @@ def engineer_features_v2(data):
         (df_fe["loan"] == "unknown")
     ).astype(int)
 
+    # Financial
     df_fe["has_housing_loan"] = (df_fe["housing"] == "yes").astype(int)
     df_fe["has_personal_loan"] = (df_fe["loan"] == "yes").astype(int)
     df_fe["has_any_loan"] = ((df_fe["housing"] == "yes") | (df_fe["loan"] == "yes")).astype(int)
     df_fe["has_both_loans"] = ((df_fe["housing"] == "yes") & (df_fe["loan"] == "yes")).astype(int)
     df_fe["default_or_risk_flag"] = ((df_fe["default"] == "yes") | (df_fe["default"] == "unknown")).astype(int)
 
+    # Time & macro
     def quarter_from_month(month):
         if month in ["jan", "feb", "mar"]:
             return "Q1"
@@ -148,16 +158,69 @@ def engineer_features_v2(data):
     df_fe["low_euribor_flag"] = (df_fe["euribor3m"] <= df_fe["euribor3m"].median()).astype(int)
     df_fe["low_confidence_flag"] = (df_fe["cons.conf.idx"] <= df_fe["cons.conf.idx"].median()).astype(int)
     df_fe["high_unemployment_proxy"] = (df_fe["emp.var.rate"] <= df_fe["emp.var.rate"].median()).astype(int)
-    df_fe["macro_stress_flag"] = ((df_fe["low_euribor_flag"] == 1) & (df_fe["low_confidence_flag"] == 1)).astype(int)
+    df_fe["macro_stress_flag"] = (
+        (df_fe["low_euribor_flag"] == 1) &
+        (df_fe["low_confidence_flag"] == 1)
+    ).astype(int)
 
     return df_fe
 
 # --------------------------------------------------
-# Load model
+# Train lightweight deployed demo model
 # --------------------------------------------------
-MODEL_PATH = "artifacts/svm_best_pipeline.joblib"
-model_loaded = os.path.exists(MODEL_PATH)
-model = joblib.load(MODEL_PATH) if model_loaded else None
+@st.cache_resource
+def train_demo_model():
+    df = pd.read_csv("bank-additional.csv", sep=";")
+    df["y_binary"] = (df["y"] == "yes").astype(int)
+    df = engineer_features_v2(df)
+
+    X = df.drop(columns=["y", "y_binary", "duration"])
+    y = df["y_binary"]
+
+    categorical_cols = X.select_dtypes(include=["object"]).columns.tolist()
+    numeric_cols = [col for col in X.columns if col not in categorical_cols]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y,
+        test_size=0.30,
+        stratify=y,
+        random_state=42
+    )
+
+    numeric_transformer = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler())
+    ])
+
+    categorical_transformer = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("onehot", OneHotEncoder(handle_unknown="ignore"))
+    ])
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", numeric_transformer, numeric_cols),
+            ("cat", categorical_transformer, categorical_cols)
+        ]
+    )
+
+    model = Pipeline(steps=[
+        ("preprocessor", preprocessor),
+        ("model", LogisticRegression(
+            penalty="l1",
+            C=0.05,
+            solver="liblinear",
+            class_weight="balanced",
+            max_iter=3000,
+            random_state=42
+        ))
+    ])
+
+    model.fit(X_train, y_train)
+    return model
+
+model = train_demo_model()
+model_loaded = model is not None
 
 # --------------------------------------------------
 # Sidebar navigation
@@ -166,7 +229,7 @@ st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to", ["Project Overview", "Model Comparison", "Customer Prediction"])
 
 # --------------------------------------------------
-# Page 1: Overview
+# Page 1: Project Overview
 # --------------------------------------------------
 if page == "Project Overview":
     st.title("Bank Marketing Subscription Prediction Dashboard")
@@ -180,6 +243,9 @@ if page == "Project Overview":
 
     st.subheader("Main Result")
     st.success("The tuned SVM (RBF) achieved the strongest balanced overall performance after Feature Engineering v2.")
+
+    st.subheader("Deployed Demo Note")
+    st.info("For responsiveness in the deployed demo, the interactive predictor uses the Lasso Logistic model. The full project comparison identified tuned SVM as the best balanced model overall.")
 
     st.subheader("Final Best Balanced Model")
     best_row = results.loc[results["Balanced_Accuracy"].idxmax()]
@@ -216,9 +282,10 @@ elif page == "Model Comparison":
 # --------------------------------------------------
 elif page == "Customer Prediction":
     st.title("Customer-Level Prediction Tool")
+    st.info("This interactive predictor uses the deployed Lasso Logistic demo model for faster Streamlit performance.")
 
     if not model_loaded:
-        st.error("Model file not found. Please run main.py first and save artifacts/svm_best_pipeline.joblib")
+        st.error("Demo model could not be trained.")
     else:
         st.subheader("Enter Customer Information")
 
@@ -226,12 +293,16 @@ elif page == "Customer Prediction":
 
         with col1:
             age = st.number_input("Age", min_value=18, max_value=95, value=35)
-            job = st.selectbox("Job", ["admin.", "blue-collar", "entrepreneur", "housemaid", "management",
-                                       "retired", "self-employed", "services", "student", "technician",
-                                       "unemployed", "unknown"])
+            job = st.selectbox("Job", [
+                "admin.", "blue-collar", "entrepreneur", "housemaid", "management",
+                "retired", "self-employed", "services", "student", "technician",
+                "unemployed", "unknown"
+            ])
             marital = st.selectbox("Marital", ["married", "single", "divorced", "unknown"])
-            education = st.selectbox("Education", ["basic.4y", "basic.6y", "basic.9y", "high.school",
-                                                   "illiterate", "professional.course", "university.degree", "unknown"])
+            education = st.selectbox("Education", [
+                "basic.4y", "basic.6y", "basic.9y", "high.school",
+                "illiterate", "professional.course", "university.degree", "unknown"
+            ])
             default = st.selectbox("Default", ["no", "yes", "unknown"])
 
         with col2:
@@ -273,11 +344,13 @@ elif page == "Customer Prediction":
                 "cons.conf.idx": cons_conf_idx,
                 "euribor3m": euribor3m,
                 "nr.employed": nr_employed,
-                "duration": 0
+                "duration": 0,
+                "y": "no",        # placeholder
+                "y_binary": 0      # placeholder
             }])
 
             input_fe = engineer_features_v2(input_df)
-            X_input = input_fe.drop(columns=["duration"], errors="ignore")
+            X_input = input_fe.drop(columns=["y", "y_binary", "duration"], errors="ignore")
 
             prob = model.predict_proba(X_input)[0, 1]
             pred = int(prob >= 0.5)
