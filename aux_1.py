@@ -170,7 +170,7 @@ def engineer_features_v2(data):
 # --------------------------------------------------
 @st.cache_resource
 def train_demo_model():
-    df = pd.read_csv("bank-additional.csv", sep=";")
+    df = pd.read_csv("bank-additional.csv")
     df["y_binary"] = (df["y"] == "yes").astype(int)
     df = engineer_features_v2(df)
 
